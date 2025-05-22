@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>KVS Viewer</title>
+    <script src="https://webrtc.github.io/adapter/adapter-latest.js"></script>
+    <script src="https://sdk.amazonaws.com/js/aws-sdk-2.776.0.min.js"></script>
+    <script src="https://unpkg.com/amazon-kinesis-video-streams-webrtc/dist/kvs-webrtc.min.js"></script>
+
+    <style>
+      body {
+        font-family: Arial, sans-serif;
+        margin: 20px;
+      }
+      video {
+        max-width: 100%;
+        background: #000;
+      }
+      .status {
+        margin: 10px 0;
+        padding: 10px;
+        background: #f0f0f0;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>KVS Stream Viewer</h1>
+    <div class="status" id="status">Initializing...</div>
+    <video id="video" autoplay playsinline muted></video>
+
+    <script>
+      console.log("Starting viewer...");
+      const deviceId = "508_864009060908353";
+      const region = "us-east-1";
+      const viewerId = "viewer-" + Math.random().toString(36).substring(2, 8);
+      const AWS_ACCESS_KEY_ID = "AWS_KEY";
+      const AWS_SECRET_ACCESS_KEY = "AWS_SECRET";
+      debugger;
+      let peerConnection;
+      window.mediaRecorder = null;
+      let recordedChunks = [];
+      AWS.config.update({
+        region: "us-east-1",
+        accessKeyId: AWS_ACCESS_KEY_ID,
+        secretAccessKey: AWS_SECRET_ACCESS_KEY,
+      });
+
+      document.getElementById(
+        "status"
+      ).textContent = `Connecting as ${viewerId}...`;
+      console.log("Connecting as", viewerId);
+    
+
+      async function connectToKVS() {
+        const viewer = {};
+        let mediaRecorder;
+        let isRecording = false;
+        // Creating KVS client
+        const video = document.getElementById("video");
+        videoRef = { current: video };
+        const kinesisVideoClient = new AWS.KinesisVideo({
+          region: region,
+          accessKeyId: AWS_ACCESS_KEY_ID,
+          secretAccessKey: AWS_SECRET_ACCESS_KEY
+        });
+
+        // Create or get channel ARN
+        const signalingChannelResponse = await kinesisVideoClient
+          .describeSignalingChannel({ ChannelName: deviceId })
+          .promise();
+        const channelARN = signalingChannelResponse.ChannelInfo.ChannelARN;
+        console.log("ARN Channel: ", channelARN); // eslint-disable-line no-console
+
+        // Get ARN channel endpoints
+        const getSignalingChannelEndpoints = await kinesisVideoClient
+          .getSignalingChannelEndpoint({
+            ChannelARN: channelARN,
+            SingleMasterChannelEndpointConfiguration: {
+              Protocols: ["WSS", "HTTPS"],
+              Role: "VIEWER",
+            },
+          })
+          .promise();
+
+        const endpointsByProtocol =
+          getSignalingChannelEndpoints?.ResourceEndpointList?.reduce(
+            (endpoints, endpoint) => {
+              const protocol = endpoint.Protocol;
+              endpoints[protocol] = endpoint.ResourceEndpoint;
+              return endpoints;
+            },
+            {}
+          );
+        console.log("Endpoints: ", endpointsByProtocol); // eslint-disable-line no-console
+
+        // Create signaling channels for each endpoints
+        const kinesisVideoSignalingChannelsClient =
+          new AWS.KinesisVideoSignalingChannels({
+            region: region,
+            accessKeyId: AWS_ACCESS_KEY_ID,
+            secretAccessKey: AWS_SECRET_ACCESS_KEY,
+            // sessionToken: props.formValues.sessionToken,
+            endpoint: endpointsByProtocol.HTTPS,
+          });
+
+        // ICE server configuration
+        const getIceServerConfigResponse =
+          await kinesisVideoSignalingChannelsClient
+            .getIceServerConfig({
+              ChannelARN: channelARN,
+            })
+            .promise();
+
+        const iceServers = [];
+        iceServers.push({
+          urls: `stun:stun.kinesisvideo.${region}.amazonaws.com:443`,
+        });
+        getIceServerConfigResponse?.IceServerList?.forEach((iceServer) =>
+          iceServers.push({
+            urls: iceServer.Uris,
+            username: iceServer.Username,
+            credential: iceServer.Password,
+          })
+        );
+        console.log("ICE servers: ", iceServers); // eslint-disable-line no-console
+
+        // Create Signaling Client
+        // const kVSWebRTC = getKVSWebRTC();
+        viewer.signalingClient = new KVSWebRTC.SignalingClient({
+          channelARN,
+          channelEndpoint: endpointsByProtocol.WSS,
+          clientId: viewerId,
+          role: "VIEWER",
+          region: region,
+          credentials: {
+            accessKeyId: AWS_ACCESS_KEY_ID,
+            secretAccessKey: AWS_SECRET_ACCESS_KEY,
+          },
+        });
+
+        const configuration = {
+          iceServers,
+          iceTransportPolicy: "all",
+        };
+        viewer.peerConnection = new RTCPeerConnection(configuration);
+
+        // Subscribe Signaling Client to the events
+        viewer.signalingClient.on("open", async () => {
+          console.log("Connected to signaling service"); // eslint-disable-line no-console
+
+          // Create an SDP offer to send to the master
+          console.log("Creating SDP offer"); // eslint-disable-line no-console
+          await viewer.peerConnection.setLocalDescription(
+            await viewer.peerConnection.createOffer({
+              offerToReceiveAudio: true,
+              offerToReceiveVideo: true,
+            })
+          );
+
+          // When trickle ICE is enabled, send the offer now and then send ICE candidates as they are generated.
+          // Otherwise wait on the ICE candidates.
+          console.log("Sending SDP offer"); // eslint-disable-line no-console
+          viewer.signalingClient.sendSdpOffer(
+            viewer.peerConnection.localDescription
+          );
+          console.log("Generating ICE candidates"); // eslint-disable-line no-console
+        });
+
+        viewer.signalingClient.on("sdpAnswer", async (answer) => {
+          // Add the SDP answer to the peer connection
+          console.log("Received SDP answer"); // eslint-disable-line no-console
+          await viewer.peerConnection.setRemoteDescription(answer);
+        });
+
+        viewer.signalingClient.on("iceCandidate", (candidate) => {
+          // Add the ICE candidate received from the MASTER to the peer connection
+          console.log("Received ICE candidate"); // eslint-disable-line no-console
+          viewer.peerConnection.addIceCandidate(candidate);
+        });
+
+        viewer.signalingClient.on("close", () => {
+          console.log("Disconnected from signaling channel"); // eslint-disable-line no-console
+          onError();
+        });
+
+        viewer.signalingClient.on("error", (error) => {
+          console.error("Signaling client error: ", error); // eslint-disable-line no-console
+          onError();
+        });
+
+        // Send any ICE candidates to the other peer
+        viewer.peerConnection.addEventListener(
+          "icecandidate",
+          ({ candidate }) => {
+            if (candidate) {
+              console.log("Generated ICE candidate"); // eslint-disable-line no-console
+
+              // When trickle ICE is enabled, send the ICE candidates as they are generated.
+              console.log("Sending ICE candidate"); // eslint-disable-line no-console
+              viewer.signalingClient.sendIceCandidate(candidate);
+            } else {
+              console.log("All ICE candidates have been generated"); // eslint-disable-line no-console
+            }
+          }
+        );
+
+        // As remote tracks are received, add them to the remote view
+        viewer.peerConnection.addEventListener("track", async (event) => {
+          console.log("Received remote track"); // eslint-disable-line no-console
+          viewer.remoteStream = event.streams[0];
+          if (videoRef.current) {
+            videoRef.current.srcObject = event.streams[0];
+            //videoRefSrc.current = event.streams[0];
+          }
+          await startRecording(event.streams[0]);
+        });
+
+        console.log("Starting viewer connection"); // eslint-disable-line no-console
+        viewer.signalingClient.open();
+      }
+
+      let mediaRecorder;
+      let isRecording = false;
+
+      async function startRecording(stream) {
+        try {
+          console.log(0);
+          // Initialize FFmpeg process
+          //   await window.startNewRecording();
+          await window.startRecording();
+
+          // Verify codec support
+          console.log(1);
+          const mimeType = 'video/webm;codecs="vp9,opus"';
+          if (!MediaRecorder.isTypeSupported(mimeType)) {
+            throw new Error(`Unsupported MIME type: ${mimeType}`);
+          }
+          console.log(2);
+
+          window.mediaRecorder = new MediaRecorder(stream, {
+            // mimeType: mimeType,
+            // videoBitsPerSecond: 2500000, // 2.5 Mbps
+            mimeType: "video/webm;codecs=vp9",
+          });
+          console.log(3);
+
+          window.mediaRecorder.ondataavailable = async (event) => {
+            console.log("3.1 on data available");
+
+            // if (event.data.size > 0) {
+            //   try {
+            //     const arrayBuffer = await event.data.arrayBuffer();
+            //     // Send raw ArrayBuffer to avoid extra conversions
+            //     await window.writeRecordingChunk(new Uint8Array(arrayBuffer));
+            //   } catch (error) {
+            //     console.error("Error processing chunk:", error);
+            //   }
+            // }
+            if (event.data.size > 0) {
+              try {
+                const arrayBuffer = await event.data.arrayBuffer();
+                const uint8Array = new Uint8Array(arrayBuffer);
+
+                // Convert to plain array for proper serialization
+                const chunkData = Array.from(uint8Array);
+
+                // Send as a structured object
+                await window.writeChunk(chunkData);
+              } catch (error) {
+                console.error("Error processing chunk:", error);
+              }
+            }
+          };
+          console.log(4);
+
+          window.mediaRecorder.onerror = (event) => {
+            console.log("4.1", "Mediarecorder error");
+
+            console.error("MediaRecorder error:", event.error);
+          };
+
+          console.log(5);
+
+          window.mediaRecorder.onstop = async () => {
+            console.log("5.1 on mediarecorder stop");
+
+            const finalPath = await window.finalizeRecording();
+            console.log("Recording completed:", finalPath);
+            isRecording = false;
+            console.log(6);
+
+            // Verify file (for debugging)
+            const response = await fetch(finalPath);
+            console.log(7);
+
+            if (!response.ok) {
+              console.error("Recording verification failed");
+            }
+          };
+
+          // Start recording with 1-second chunks
+          window.mediaRecorder.start(1000);
+          isRecording = true;
+          console.log("Recording started");
+        } catch (error) {
+          console.error("Error starting recording:", error);
+        }
+      }
+
+      function stopRecording() {
+        if (window.mediaRecorder && isRecording) {
+          window.mediaRecorder.stop();
+        }
+      }
+
+      window.addEventListener("beforeunload", stopRecording);
+
+      // Start connection when page loads
+      connectToKVS();
+    </script>
+  </body>
+</html>

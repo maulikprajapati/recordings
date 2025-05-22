@@ -1,0 +1,36 @@
+{
+  "name": "recording",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "dependencies": {
+    "@aws-sdk/client-kinesis-video": "^3.798.0",
+    "@aws-sdk/client-kinesis-video-archived-media": "^3.798.0",
+    "@aws-sdk/client-kinesis-video-signaling": "^3.787.0",
+    "@aws-sdk/client-kinesis-video-webrtc-storage": "^3.798.0",
+    "@roamhq/wrtc": "^0.8.0",
+    "amazon-kinesis-video-streams-webrtc": "^2.3.2",
+    "aws-sdk": "^2.1692.0",
+    "canvas": "^3.1.0",
+    "express": "^4.21.2",
+    "extendable-media-recorder": "^9.2.23",
+    "ffmpeg-static": "^5.2.0",
+    "fluent-ffmpeg": "^2.1.3",
+    "fluent-ffmpeg-multistream": "^1.0.0",
+    "media-recorder-js": "^2.1.0",
+    "mediasoup": "^3.15.7",
+    "node-media-server": "^4.0.14",
+    "node-rtsp-stream": "^0.0.9",
+    "puppeteer": "^24.4.0",
+    "puppeteer-stream": "^3.0.19",
+    "stream-chunker": "^1.2.8",
+    "uuid": "^11.1.0",
+    "werift-webrtc": "^0.0.6",
+    "ws": "^8.18.1"
+  }
+}
